@@ -52,13 +52,14 @@ a stack trace.
 | `←` `→` | seek 5 seconds back / forward |
 | `+` `-` | volume up / down (10% steps) |
 | `s` | shuffle on / off |
-| `r` | repeat: off → all → one |
+| `r` | end-of-track mode: off → all → one → stop |
 | `/` | filter the list by name |
+| `Esc` | clear the filter |
 | `q` or `Ctrl-C` | quit |
 
 While filtering, typing edits the query: `⏎` keeps the filter and returns to
 normal keys, `Esc` clears it, backspace deletes. `Ctrl-C` always quits, even
-mid-filter.
+mid-filter. Outside the filter box, `Esc` clears an active filter.
 
 ## How it fits together
 
@@ -121,11 +122,15 @@ Hardening covers an empty folder, a folder that does not exist, VLC missing from
 When a track finishes the next one starts by itself, following the current
 mode:
 
-| Repeat | At the end of a track | At the end of the list |
+| Mode | At the end of a track | At the end of the list |
 |---|---|---|
 | `off` | plays the next song | stops, shows `end of list` |
 | `all` | plays the next song | wraps back to the first |
 | `one` | replays the same song | — |
+| `stop` | stops there | — |
+
+`stop` is for listening to one song and letting it end — playback halts when the
+track finishes instead of rolling on.
 
 Shuffle reorders that sequence without touching the list on screen, so what you
 see stays alphabetical while playback jumps around.

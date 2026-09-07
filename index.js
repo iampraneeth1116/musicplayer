@@ -96,7 +96,7 @@ const state = {
     length: null,
     volume: null,
     shuffle: false,
-    repeat: 'off',    // 'off' | 'all' | 'one'
+    repeat: 'off',    // 'off' | 'all' | 'one' | 'stop'
     query: '',
     filterMode: false,
     message: null,
@@ -223,9 +223,16 @@ async function playRelative(delta) {
     await playOrderPosition(position + delta);
 }
 
-/** End of track: repeat-one replays it, repeat-all wraps to the start,
- *  otherwise the list stops at the end instead of looping. */
+/** End of track: 'stop' halts here, repeat-one replays it, repeat-all wraps to
+ *  the start, and 'off' plays on but stops at the end of the list. */
 async function advanceAuto() {
+    if (state.repeat === 'stop') {
+        clearCurrent();
+        state.message = 'stopped after track';
+        render();
+        return;
+    }
+
     if (state.repeat === 'one') {
         const visibleIndex = currentVisibleIndex();
         if (visibleIndex !== -1) {
@@ -260,10 +267,17 @@ function toggleShuffle() {
     state.message = state.shuffle ? 'shuffle on' : 'shuffle off';
 }
 
+const REPEAT_MODES = ['off', 'all', 'one', 'stop'];
+const REPEAT_LABELS = {
+    off: 'repeat off',
+    all: 'repeat all',
+    one: 'repeat one',
+    stop: 'stop after track',
+};
+
 function cycleRepeat() {
-    const modes = ['off', 'all', 'one'];
-    state.repeat = modes[(modes.indexOf(state.repeat) + 1) % modes.length];
-    state.message = `repeat ${state.repeat}`;
+    state.repeat = REPEAT_MODES[(REPEAT_MODES.indexOf(state.repeat) + 1) % REPEAT_MODES.length];
+    state.message = REPEAT_LABELS[state.repeat];
 }
 
 async function nudgeVolume(delta) {
@@ -315,6 +329,14 @@ async function handleKey(key) {
         case 'right': await player.seek(SEEK_SECONDS); break;
         case 'enter': await playAt(state.cursor); break;
         case 'space': await player.togglePause(); break;
+
+        case 'escape': // clear an active filter without re-entering the filter box
+            if (state.query) {
+                state.query = '';
+                applyFilter();
+                state.message = 'filter cleared';
+            }
+            break;
 
         case 'char':
             if (key.ch === 'q') { await shutdown(0); break; }
