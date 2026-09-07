@@ -1,0 +1,12 @@
+{
+  "name": "terminal-music-player",
+  "version": "1.0.0",
+  "description": "A terminal music player in plain Node.js, driving VLC over its rc interface",
+  "main": "index.js",
+  "bin": { "tmp-player": "index.js" },
+  "scripts": {
+    "start": "node index.js"
+  },
+  "license": "MIT",
+  "private": true
+}

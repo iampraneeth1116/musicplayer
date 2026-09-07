@@ -15,12 +15,74 @@ const keys = require('./lib/keys');
 const { Player } = require('./lib/player');
 
 const RENDER_INTERVAL_MS = 100;
+const DEFAULT_VOLUME_PERCENT = 60;
 
-const args = process.argv.slice(2);
-const volumeFlagIndex = args.indexOf('--volume');
-const startVolumePercent = volumeFlagIndex !== -1 ? Number(args[volumeFlagIndex + 1]) : 60;
-const dirArg = args.find((arg, i) => !arg.startsWith('--') && i !== volumeFlagIndex + 1);
-const songsDir = dirArg ? path.resolve(dirArg) : path.join(__dirname, 'songs');
+const USAGE = `Terminal Music Player
+
+  Usage: node index.js [folder] [options]
+
+  folder              folder of audio files to play (default: ./songs)
+
+  --volume <0-100>    starting volume (default: ${DEFAULT_VOLUME_PERCENT})
+  --vlc <binary>      VLC executable to use (default: vlc)
+  -h, --help          show this help
+  -v, --version       show the version
+
+  Keys: arrows move, enter plays, space pauses, x stops, n/b next/previous,
+        left/right seek, +/- volume, s shuffle, r repeat, / filter, q quits.
+`;
+
+/** Explicit parser: every argument is classified, and anything unrecognised is
+ *  reported instead of being silently ignored. */
+function parseArgs(argv) {
+    const options = { dir: null, volume: DEFAULT_VOLUME_PERCENT, vlc: 'vlc', help: false, version: false };
+
+    for (let i = 0; i < argv.length; i++) {
+        const arg = argv[i];
+
+        if (arg === '-h' || arg === '--help') { options.help = true; continue; }
+        if (arg === '-v' || arg === '--version') { options.version = true; continue; }
+
+        if (arg === '--volume' || arg === '--vlc') {
+            const value = argv[++i];
+            if (value === undefined) throw new Error(`${arg} needs a value`);
+            if (arg === '--volume') options.volume = Number(value);
+            else options.vlc = value;
+            continue;
+        }
+
+        const inlineMatch = arg.match(/^--(volume|vlc)=(.*)$/);
+        if (inlineMatch) {
+            if (inlineMatch[1] === 'volume') options.volume = Number(inlineMatch[2]);
+            else options.vlc = inlineMatch[2];
+            continue;
+        }
+
+        if (arg.startsWith('-')) throw new Error(`Unknown option: ${arg}\nTry --help.`);
+
+        if (options.dir !== null) throw new Error(`Unexpected extra argument: ${arg}\nTry --help.`);
+        options.dir = arg;
+    }
+
+    if (!Number.isFinite(options.volume) || options.volume < 0 || options.volume > 100) {
+        throw new Error('--volume must be a number between 0 and 100');
+    }
+
+    return options;
+}
+
+let options;
+try {
+    options = parseArgs(process.argv.slice(2));
+} catch (err) {
+    console.error(err.message);
+    process.exit(2);
+}
+
+if (options.help) { process.stdout.write(USAGE); process.exit(0); }
+if (options.version) { console.log(require('./package.json').version); process.exit(0); }
+
+const songsDir = options.dir ? path.resolve(options.dir) : path.join(__dirname, 'songs');
 
 const state = {
     songs: [],        // everything found in the folder
@@ -282,12 +344,10 @@ async function main() {
     state.songs = library.load(songsDir);
     applyFilter(); // seeds `visible` and `order` from the full list
 
-    player = new Player();
+    player = new Player({ bin: options.vlc });
     await player.start();
 
-    if (Number.isFinite(startVolumePercent)) {
-        await player.setVolume((Math.min(100, Math.max(0, startVolumePercent)) / 100) * 256);
-    }
+    await player.setVolume((options.volume / 100) * 256);
 
     player.on('tick', (snapshot) => {
         state.playerState = snapshot.state;

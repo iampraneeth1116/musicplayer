@@ -31,10 +31,14 @@ VLC's own clock.
 node index.js                    # plays from ./songs
 node index.js /path/to/music     # any other folder
 node index.js --volume 0         # start muted (0-100, default 60)
+node index.js --vlc /path/to/vlc # a VLC that isn't on your PATH
+node index.js --help             # full usage
 ```
 
 It needs a real terminal — piping stdin exits with a message rather than
-crashing in raw mode.
+crashing in raw mode. Unknown options, a bad `--volume`, or a folder that does
+not exist all fail with a specific message and a non-zero exit code, rather than
+a stack trace.
 
 ## Keys
 
@@ -98,12 +102,21 @@ Built in phases, each with a checkpoint that had to actually run.
 | 3 | play / pause / stop / next / prev | ✅ done |
 | 4 | auto-advance at end of track | ✅ done |
 | 5 | shuffle, repeat, seek, volume, filter | ✅ done |
-| 6 | hardening, `--help`, `docs/BUGS.md` | ⬜ next |
+| 6 | hardening, `--help`, `docs/BUGS.md` | ✅ done |
 
-Verified by driving the app through a real pseudo-terminal: pause freezes the
-clock at `0:01` and it is still `0:01` more than a second later, resuming
-continues to `0:03`, and `ps` reports **no** VLC processes left alive after
-quitting.
+Every checkpoint was verified by driving the app through a real
+pseudo-terminal rather than by reading the code. Among other things: pause
+freezes the clock and resume continues it, a finished track advances to the next
+by itself, repeat-all wraps from last to first, seeking clamps at zero, and `ps`
+reports **no** VLC processes left alive after quitting.
+
+Hardening covers an empty folder, a folder that does not exist, VLC missing from
+`PATH`, every key pressed with nothing playing, and terminal widths from 28 to
+100 columns including a live resize.
+
+`docs/BUGS.md` catalogues the 24 issues found in the in-class versions this was
+rewritten from, and the four bugs the rewrite introduced that testing caught.
+`docs/rc-notes.md` documents VLC's `rc` protocol as measured.
 
 ## Playback order
 
