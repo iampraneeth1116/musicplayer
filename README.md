@@ -44,7 +44,7 @@ crashing in raw mode.
 | `⏎` | play the highlighted song |
 | `space` | pause / resume |
 | `x` | stop |
-| `n` `b` | next / previous |
+| `n` `b` | next / previous (steps from the playing track, not the cursor) |
 | `q` or `Ctrl-C` | quit |
 
 Seek, volume, shuffle, repeat and filtering are planned — see *Status* below.
@@ -90,14 +90,23 @@ Built in phases, each with a checkpoint that had to actually run.
 | 1 | library scan + static render | ✅ done |
 | 2 | key decoding + navigation + clean exit | ✅ done |
 | 3 | play / pause / stop / next / prev | ✅ done |
-| 4 | auto-advance at end of track | ⬜ next |
-| 5 | shuffle, repeat, seek, volume, filter | ⬜ |
+| 4 | auto-advance at end of track | ✅ done |
+| 5 | shuffle, repeat, seek, volume, filter | ⬜ next |
 | 6 | hardening, `--help`, `docs/BUGS.md` | ⬜ |
 
 Verified by driving the app through a real pseudo-terminal: pause freezes the
 clock at `0:01` and it is still `0:01` more than a second later, resuming
 continues to `0:03`, and `ps` reports **no** VLC processes left alive after
 quitting.
+
+## Auto-advance
+
+When a track finishes, the next one starts by itself. At the end of the list it
+stops and says `end of list` rather than looping — repeat modes arrive in phase
+5. Stopping with `x` is treated as a deliberate act and never advances.
+
+`n` / `b` step relative to the **playing** track, so browsing the list with the
+arrow keys while music plays doesn't change what "next" means.
 
 ## Notes
 

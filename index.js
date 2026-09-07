@@ -5,8 +5,8 @@
 // Wires library (file handling) + player (process management) + ui (ANSI
 // rendering) + keys (raw stdin) together and owns the application state.
 //
-// Scope: phases 0-3 — browse, play, pause, stop, next/previous, clean exit.
-// Auto-advance, shuffle/repeat, seek and volume keys land in phases 4-5.
+// Scope: phases 0-4 — browse, play, pause, stop, next/previous, auto-advance
+// at end of track, clean exit. Shuffle/repeat, seek and volume land in phase 5.
 
 const path = require('path');
 const library = require('./lib/library');
@@ -24,7 +24,8 @@ const songsDir = dirArg ? path.resolve(dirArg) : path.join(__dirname, 'songs');
 
 const state = {
     songs: [],
-    cursor: 0,
+    cursor: 0,          // where the user is browsing
+    currentIndex: null, // which song is actually loaded in the player
     currentPath: null,
     currentName: null,
     playerState: 'stopped',
@@ -84,6 +85,7 @@ async function playAt(index) {
     state.cursor = ((index % count) + count) % count;
 
     const song = state.songs[state.cursor];
+    state.currentIndex = state.cursor;
     state.currentPath = song.path;
     state.currentName = song.name;
     state.time = 0;
@@ -93,12 +95,40 @@ async function playAt(index) {
     await player.playFile(song.path);
 }
 
-async function stopPlayback() {
-    await player.stop();
+function clearCurrent() {
+    state.currentIndex = null;
     state.currentPath = null;
     state.currentName = null;
     state.time = null;
     state.length = null;
+}
+
+async function stopPlayback() {
+    await player.stop();
+    clearCurrent();
+}
+
+/** Next/previous step from the PLAYING track, falling back to the cursor when
+ *  nothing is loaded — so browsing while a song plays doesn't hijack `n`. */
+async function playRelative(delta) {
+    const base = state.currentIndex === null ? state.cursor : state.currentIndex;
+    await playAt(base + delta);
+}
+
+/** A finished track rolls into the next one. Repeat/shuffle arrive in phase 5,
+ *  so for now the list simply stops at the end instead of looping. */
+async function advanceAuto() {
+    const nextIndex = (state.currentIndex === null ? -1 : state.currentIndex) + 1;
+
+    if (nextIndex >= state.songs.length) {
+        clearCurrent();
+        state.message = 'end of list';
+        render();
+        return;
+    }
+
+    await playAt(nextIndex);
+    render();
 }
 
 // --- input ----------------------------------------------------------------
@@ -120,8 +150,8 @@ async function handleKey(key) {
 
         case 'char':
             if (key.ch === 'q') { await shutdown(0); break; }
-            if (key.ch === 'n') { await playAt(state.cursor + 1); break; }
-            if (key.ch === 'b') { await playAt(state.cursor - 1); break; }
+            if (key.ch === 'n') { await playRelative(1); break; }
+            if (key.ch === 'b') { await playRelative(-1); break; }
             if (key.ch === 'x') { await stopPlayback(); break; }
             break;
 
@@ -154,13 +184,8 @@ async function main() {
         state.volume = snapshot.volume;
     });
 
-    // Phase 4 will turn this into auto-advance.
     player.on('ended', () => {
-        state.currentPath = null;
-        state.currentName = null;
-        state.time = null;
-        state.length = null;
-        state.message = 'track finished';
+        advanceAuto().catch((err) => { state.message = `could not advance: ${err.message}`; });
     });
 
     player.on('error', (err) => { state.message = `player error: ${err.message}`; });

@@ -78,9 +78,19 @@ Every assumption above survived contact with the running app:
 * **`clear` + `add` switches tracks cleanly** inside the one process, and `ps`
   shows zero surviving `vlc -I rc` processes after quit.
 
-### Not yet exercised
+### End-of-track path, proven in phase 4
 
-The end-of-track path — finding #3, the empty `get_time` — is handled in code
-(`state === 'stopped'` after playback has been seen ⇒ emit `ended`) but has only
-been observed in the Phase 0 spike, not yet in the app. Phase 4's auto-advance
-is what will prove it, by letting the 10s sample run to its end.
+Finding #3 — the empty `get_time` at end of track — is now exercised for real.
+Letting `sample-10s.mp3` run to its natural end, the app rolled into the next
+track by itself: the marker moved, total length switched `0:10` → `1:00`, and
+the clock restarted from `0:00`. So `state === 'stopped'` after playback has
+been observed is a sound `ended` trigger, and the empty `get_time` is correctly
+read as "no time available" rather than being coerced to `0`.
+
+Two negative cases matter just as much, and both hold:
+
+* **The last track does not loop.** With a folder containing only the 10s file,
+  the end of it reports `end of list` and stops — it does not restart.
+* **A deliberate `stop` never auto-advances.** Pressing `x` mid-track clears
+  the player and it stays cleared 4s later. Clearing `_sawPlayback` in `stop()`
+  is what separates "the user stopped this" from "the song ended".
