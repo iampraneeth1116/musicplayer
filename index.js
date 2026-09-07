@@ -5,8 +5,8 @@
 // Wires library (file handling) + player (process management) + ui (ANSI
 // rendering) + keys (raw stdin) together and owns the application state.
 //
-// Scope: phases 0-4 — browse, play, pause, stop, next/previous, auto-advance
-// at end of track, clean exit. Shuffle/repeat, seek and volume land in phase 5.
+// Scope: phases 0-5 — browse, filter, play, pause, stop, next/previous, seek,
+// volume, shuffle, repeat, auto-advance at end of track, and a clean exit.
 
 const path = require('path');
 const library = require('./lib/library');
@@ -23,19 +23,20 @@ const dirArg = args.find((arg, i) => !arg.startsWith('--') && i !== volumeFlagIn
 const songsDir = dirArg ? path.resolve(dirArg) : path.join(__dirname, 'songs');
 
 const state = {
-    songs: [],
-    cursor: 0,          // where the user is browsing
-    currentIndex: null, // which song is actually loaded in the player
-    currentPath: null,
+    songs: [],        // everything found in the folder
+    visible: [],      // what survives the filter — the list on screen
+    order: [],        // positions into `visible`: play sequence, shuffled or not
+    cursor: 0,        // where the user is browsing, indexes `visible`
+    currentPath: null,   // the PLAYING track, identified by path (see below)
     currentName: null,
     playerState: 'stopped',
     time: null,
     length: null,
     volume: null,
-    shuffle: false,      // phase 5
-    repeat: 'off',       // phase 5
-    query: '',           // phase 5
-    filterMode: false,   // phase 5
+    shuffle: false,
+    repeat: 'off',    // 'off' | 'all' | 'one'
+    query: '',
+    filterMode: false,
     message: null,
 };
 
@@ -45,7 +46,7 @@ let uiActive = false;
 let shuttingDown = false;
 
 function render() {
-    if (uiActive) ui.render(state);
+    if (uiActive) ui.render({ ...state, songs: state.visible });
 }
 
 // --- lifecycle ------------------------------------------------------------
@@ -78,14 +79,45 @@ async function shutdown(code = 0, err = null) {
 
 // --- playback -------------------------------------------------------------
 
-async function playAt(index) {
-    if (state.songs.length === 0) return;
+/** `visible` is the list after filtering; `order` is the sequence next/previous
+ *  walk through it — identity normally, shuffled when shuffle is on. */
+function applyFilter() {
+    const query = state.query.trim().toLowerCase();
+    state.visible = query
+        ? state.songs.filter((song) => song.name.toLowerCase().includes(query))
+        : state.songs.slice();
 
-    const count = state.songs.length;
-    state.cursor = ((index % count) + count) % count;
+    rebuildOrder();
+    state.cursor = Math.max(0, Math.min(state.cursor, state.visible.length - 1));
+}
 
-    const song = state.songs[state.cursor];
-    state.currentIndex = state.cursor;
+function rebuildOrder() {
+    const count = state.visible.length;
+    state.order = state.shuffle
+        ? library.shuffledOrder(count)
+        : Array.from({ length: count }, (_, index) => index);
+}
+
+/** The playing track is identified by PATH, never by index — filtering and
+ *  shuffling both move indices around underneath it. Returns -1 when the
+ *  playing song is not in the current view (filtered out, or nothing playing). */
+function currentVisibleIndex() {
+    if (!state.currentPath) return -1;
+    return state.visible.findIndex((song) => song.path === state.currentPath);
+}
+
+function currentOrderPosition() {
+    const visibleIndex = currentVisibleIndex();
+    return visibleIndex === -1 ? -1 : state.order.indexOf(visibleIndex);
+}
+
+async function playAt(visibleIndex) {
+    if (state.visible.length === 0) return;
+
+    const count = state.visible.length;
+    state.cursor = ((visibleIndex % count) + count) % count;
+
+    const song = state.visible[state.cursor];
     state.currentPath = song.path;
     state.currentName = song.name;
     state.time = 0;
@@ -95,8 +127,13 @@ async function playAt(index) {
     await player.playFile(song.path);
 }
 
+async function playOrderPosition(position) {
+    if (state.order.length === 0) return;
+    const count = state.order.length;
+    await playAt(state.order[((position % count) + count) % count]);
+}
+
 function clearCurrent() {
-    state.currentIndex = null;
     state.currentPath = null;
     state.currentName = null;
     state.time = null;
@@ -108,51 +145,125 @@ async function stopPlayback() {
     clearCurrent();
 }
 
-/** Next/previous step from the PLAYING track, falling back to the cursor when
- *  nothing is loaded — so browsing while a song plays doesn't hijack `n`. */
+/** Manual next/previous: step through the play order from the PLAYING track,
+ *  falling back to the cursor when nothing is loaded. Always wraps. */
 async function playRelative(delta) {
-    const base = state.currentIndex === null ? state.cursor : state.currentIndex;
-    await playAt(base + delta);
+    if (state.order.length === 0) return;
+
+    const position = currentOrderPosition();
+    if (position === -1) {
+        // Nothing playing, or the playing track was filtered out of view.
+        // Start from the song under the cursor rather than skipping past it.
+        await playAt(state.cursor);
+        return;
+    }
+
+    await playOrderPosition(position + delta);
 }
 
-/** A finished track rolls into the next one. Repeat/shuffle arrive in phase 5,
- *  so for now the list simply stops at the end instead of looping. */
+/** End of track: repeat-one replays it, repeat-all wraps to the start,
+ *  otherwise the list stops at the end instead of looping. */
 async function advanceAuto() {
-    const nextIndex = (state.currentIndex === null ? -1 : state.currentIndex) + 1;
+    if (state.repeat === 'one') {
+        const visibleIndex = currentVisibleIndex();
+        if (visibleIndex !== -1) {
+            await playAt(visibleIndex);
+            render();
+            return;
+        }
+    }
 
-    if (nextIndex >= state.songs.length) {
-        clearCurrent();
-        state.message = 'end of list';
+    const nextPosition = currentOrderPosition() + 1;
+
+    if (nextPosition >= state.order.length) {
+        if (state.repeat === 'all' && state.order.length > 0) {
+            await playOrderPosition(0);
+        } else {
+            clearCurrent();
+            state.message = 'end of list';
+        }
         render();
         return;
     }
 
-    await playAt(nextIndex);
+    await playOrderPosition(nextPosition);
     render();
+}
+
+// --- modes ----------------------------------------------------------------
+
+function toggleShuffle() {
+    state.shuffle = !state.shuffle;
+    rebuildOrder();
+    state.message = state.shuffle ? 'shuffle on' : 'shuffle off';
+}
+
+function cycleRepeat() {
+    const modes = ['off', 'all', 'one'];
+    state.repeat = modes[(modes.indexOf(state.repeat) + 1) % modes.length];
+    state.message = `repeat ${state.repeat}`;
+}
+
+async function nudgeVolume(delta) {
+    const current = state.volume === null ? 154 : state.volume;
+    await player.setVolume(current + delta);
 }
 
 // --- input ----------------------------------------------------------------
 
+const SEEK_SECONDS = 5;
+const VOLUME_STEP = 26; // ~10% of VLC's 0-256 scale
+
 function moveCursor(delta) {
-    if (state.songs.length === 0) return;
-    const count = state.songs.length;
+    if (state.visible.length === 0) return;
+    const count = state.visible.length;
     state.cursor = ((state.cursor + delta) % count + count) % count;
 }
 
+/** While filtering, printable keys build the query instead of firing commands. */
+function handleFilterKey(key) {
+    if (key.name === 'escape') {
+        state.filterMode = false;
+        state.query = '';
+        applyFilter();
+    } else if (key.name === 'enter') {
+        state.filterMode = false; // keep the filter, just stop typing
+    } else if (key.name === 'backspace') {
+        state.query = state.query.slice(0, -1);
+        applyFilter();
+    } else if (key.name === 'char' || key.name === 'space') {
+        state.query += key.ch;
+        applyFilter();
+    }
+}
+
 async function handleKey(key) {
+    if (key.name === 'ctrl-c') { await shutdown(0); return; }  // always quits
+
+    if (state.filterMode) {
+        handleFilterKey(key);
+        render();
+        return;
+    }
+
     switch (key.name) {
         case 'up': moveCursor(-1); break;
         case 'down': moveCursor(1); break;
+        case 'left': await player.seek(-SEEK_SECONDS); break;
+        case 'right': await player.seek(SEEK_SECONDS); break;
         case 'enter': await playAt(state.cursor); break;
         case 'space': await player.togglePause(); break;
-
-        case 'ctrl-c': await shutdown(0); break;
 
         case 'char':
             if (key.ch === 'q') { await shutdown(0); break; }
             if (key.ch === 'n') { await playRelative(1); break; }
             if (key.ch === 'b') { await playRelative(-1); break; }
             if (key.ch === 'x') { await stopPlayback(); break; }
+            if (key.ch === 's') { toggleShuffle(); break; }
+            if (key.ch === 'r') { cycleRepeat(); break; }
+            if (key.ch === '+' || key.ch === '=') { await nudgeVolume(VOLUME_STEP); break; }
+            if (key.ch === '-' || key.ch === '_') { await nudgeVolume(-VOLUME_STEP); break; }
+            if (key.ch === '/') { state.filterMode = true; state.message = null; break; }
             break;
 
         default: break;
@@ -169,6 +280,7 @@ async function main() {
     }
 
     state.songs = library.load(songsDir);
+    applyFilter(); // seeds `visible` and `order` from the full list
 
     player = new Player();
     await player.start();

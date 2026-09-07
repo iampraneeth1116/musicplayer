@@ -45,10 +45,16 @@ crashing in raw mode.
 | `space` | pause / resume |
 | `x` | stop |
 | `n` `b` | next / previous (steps from the playing track, not the cursor) |
+| `←` `→` | seek 5 seconds back / forward |
+| `+` `-` | volume up / down (10% steps) |
+| `s` | shuffle on / off |
+| `r` | repeat: off → all → one |
+| `/` | filter the list by name |
 | `q` or `Ctrl-C` | quit |
 
-Seek, volume, shuffle, repeat and filtering are planned — see *Status* below.
-The on-screen help only ever lists keys that actually work.
+While filtering, typing edits the query: `⏎` keeps the filter and returns to
+normal keys, `Esc` clears it, backspace deletes. `Ctrl-C` always quits, even
+mid-filter.
 
 ## How it fits together
 
@@ -91,22 +97,37 @@ Built in phases, each with a checkpoint that had to actually run.
 | 2 | key decoding + navigation + clean exit | ✅ done |
 | 3 | play / pause / stop / next / prev | ✅ done |
 | 4 | auto-advance at end of track | ✅ done |
-| 5 | shuffle, repeat, seek, volume, filter | ⬜ next |
-| 6 | hardening, `--help`, `docs/BUGS.md` | ⬜ |
+| 5 | shuffle, repeat, seek, volume, filter | ✅ done |
+| 6 | hardening, `--help`, `docs/BUGS.md` | ⬜ next |
 
 Verified by driving the app through a real pseudo-terminal: pause freezes the
 clock at `0:01` and it is still `0:01` more than a second later, resuming
 continues to `0:03`, and `ps` reports **no** VLC processes left alive after
 quitting.
 
-## Auto-advance
+## Playback order
 
-When a track finishes, the next one starts by itself. At the end of the list it
-stops and says `end of list` rather than looping — repeat modes arrive in phase
-5. Stopping with `x` is treated as a deliberate act and never advances.
+When a track finishes the next one starts by itself, following the current
+mode:
 
-`n` / `b` step relative to the **playing** track, so browsing the list with the
-arrow keys while music plays doesn't change what "next" means.
+| Repeat | At the end of a track | At the end of the list |
+|---|---|---|
+| `off` | plays the next song | stops, shows `end of list` |
+| `all` | plays the next song | wraps back to the first |
+| `one` | replays the same song | — |
+
+Shuffle reorders that sequence without touching the list on screen, so what you
+see stays alphabetical while playback jumps around.
+
+Stopping with `x` is treated as deliberate and never advances — worth noting,
+because a stopped player and a finished track look identical to VLC. The
+difference is tracked explicitly.
+
+`n` / `b` step relative to the **playing** track, so browsing with the arrow
+keys while music plays doesn't change what "next" means. The playing track is
+identified by its file path rather than its position, because filtering and
+shuffling both move positions around underneath it. If the playing song is
+filtered out of view, `n` starts again from the cursor.
 
 ## Notes
 

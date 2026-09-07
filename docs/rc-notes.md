@@ -4,6 +4,10 @@ This player never controls audio with signals. It launches one VLC process and
 sends it text commands, which is what makes pause, seek, volume and an accurate
 progress bar possible at all.
 
+**`rc` is short for *remote control*** — one of VLC's interface modules (VLC 3.x
+lists it as `oldrc`, "Remote control interface"). Passing `-I rc` swaps the GUI
+for a plain-text command channel on the process's stdin and stdout.
+
 This document records how that interface actually behaves. Everything here is
 **observed output**, measured before the player was written and re-confirmed by
 the finished app — not copied from documentation.
