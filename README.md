@@ -102,7 +102,7 @@ Built in phases, each with a checkpoint that had to actually run.
 | 3 | play / pause / stop / next / prev | ✅ done |
 | 4 | auto-advance at end of track | ✅ done |
 | 5 | shuffle, repeat, seek, volume, filter | ✅ done |
-| 6 | hardening, `--help`, `docs/BUGS.md` | ✅ done |
+| 6 | hardening, `--help`, design notes | ✅ done |
 
 Every checkpoint was verified by driving the app through a real
 pseudo-terminal rather than by reading the code. Among other things: pause
@@ -114,8 +114,6 @@ Hardening covers an empty folder, a folder that does not exist, VLC missing from
 `PATH`, every key pressed with nothing playing, and terminal widths from 28 to
 100 columns including a live resize.
 
-`docs/BUGS.md` catalogues the 24 issues found in the in-class versions this was
-rewritten from, and the four bugs the rewrite introduced that testing caught.
 `docs/rc-notes.md` documents VLC's `rc` protocol as measured.
 
 ## Playback order

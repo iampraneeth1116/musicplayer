@@ -81,8 +81,8 @@ ends rather than exiting.
 
 **Why it matters.** The player never spawns or kills a process per song. Since
 there is only ever one child, no slow `await` can finish late and leave a second,
-untracked player running in the background — the orphaned-process bug in the
-lab code becomes structurally impossible rather than merely guarded against.
+untracked player running in the background — an orphaned process becomes
+structurally impossible rather than something to guard against.
 
 **Confirmed:** track switching works cleanly in the running app, and `ps` reports
 zero surviving `vlc -I rc` processes after quitting.
