@@ -61,3 +61,26 @@ the long-lived design needs.
   clock, so there is no drifting local counter to stack up or leak.
 * Only fire `ended` after playback has actually been observed, to ignore the
   brief `stopped` window between `add` and the first audio.
+
+---
+
+## Validated in implementation (phases 1-3)
+
+Every assumption above survived contact with the running app:
+
+* **The `"> "` terminator works as a response boundary.** The command queue in
+  `lib/player.js` resolves each request on the next prompt and has not desynced
+  in testing. The 2s timeout has never needed to fire.
+* **Pause really is frozen, not slowed.** Driving the app through a pty, the
+  clock read `0:01` at pause and still `0:01` 1.2s later, then `0:03` after
+  resume. This is what confirms finding #2 end-to-end: a paused track reports
+  `playing`, so it can never be mistaken for a finished one.
+* **`clear` + `add` switches tracks cleanly** inside the one process, and `ps`
+  shows zero surviving `vlc -I rc` processes after quit.
+
+### Not yet exercised
+
+The end-of-track path — finding #3, the empty `get_time` — is handled in code
+(`state === 'stopped'` after playback has been seen ⇒ emit `ended`) but has only
+been observed in the Phase 0 spike, not yet in the app. Phase 4's auto-advance
+is what will prove it, by letting the 10s sample run to its end.
