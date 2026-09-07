@@ -1,96 +1,137 @@
-# Phase 0 — VLC rc interface spike
+# Talking to VLC: the `rc` interface
 
-Measured against **VLC 3.0.23 Vetinari** (Homebrew, Apple Silicon) on 2026-09-07.
-Everything below is observed output, not documentation.
+This player never controls audio with signals. It launches one VLC process and
+sends it text commands, which is what makes pause, seek, volume and an accurate
+progress bar possible at all.
 
-Launch line used by the app:
+This document records how that interface actually behaves. Everything here is
+**observed output**, measured before the player was written and re-confirmed by
+the finished app — not copied from documentation.
 
-    vlc -I rc --no-video --quiet
+| | |
+|---|---|
+| Measured against | VLC **3.0.23 Vetinari** (Homebrew, Apple Silicon) |
+| Date | 2026-09-07 |
+| Launch line | `vlc -I rc --no-video --quiet` |
 
-## Protocol shape
-
-* VLC prints a two-line banner, then `"> "` — the prompt is the **ready signal**.
-* Every command is answered with zero or more `\r`-terminated lines, followed by `"> "`.
-* That trailing prompt is a reliable **response terminator**, so commands can be
-  queued and answered one at a time instead of guessing with timers.
-* Commands that succeed silently (`pause`, `seek`, `stop`, `clear`, `volume N`)
-  return *no* lines — only the prompt.
-
-## Command results
-
-| Command | Observed output | Notes |
-|---|---|---|
-| `add <path>` | *(none)* | Starts playing immediately. Unquoted paths **with spaces work** — rc takes the rest of the line. |
-| `get_length` | `10` | Whole seconds. |
-| `get_time` | `0` | Whole seconds. |
-| `is_playing` | `1` / `0` | See the pause caveat below. |
-| `volume` | `128` | Query form. Scale is **0–256**. |
-| `volume 128` | *(none)* | Set form. |
-| `pause` | *(none)* | A **toggle**, not a set. |
-| `seek +3` | *(none)* | Relative seek works (2s → 5s). |
-| `seek 30` | *(none)* | Absolute also works. |
-| `stop` / `clear` | *(none)* | Both drop `is_playing` to 0. |
-| `status` | `( new input: file://… )`<br>`( audio volume: 0 )`<br>`( state playing )` | State is `playing` \| `paused` \| `stopped`. |
-| `quit` | `Shutting down.` | Child exits with code 0. |
-
-## The three findings that shaped the design
-
-**1. One VLC process is enough for the whole session.**
-Booting with *no* file works (`is_playing` → 0), and `clear` + `add` switches
-tracks inside the same process. No kill/spawn per song ⇒ the orphaned-child race
-in the lab code cannot occur.
-
-**2. `is_playing` returns `1` while PAUSED.**
-Verified via `status` → `( state paused )` with `get_time` frozen at `1` across a
-full second. So `stopped` is an **unambiguous end-of-track signal** — no risk of
-mistaking a pause for a finished song. This is what makes auto-advance safe.
-
-**3. At end of track, `get_time` returns an EMPTY line.**
-Not `0`, not the length — nothing, with `is_playing` → `0`. The parser must treat
-an empty response as "no time available" rather than coercing it to `0`
-(`Number("")` is `0`, which would silently rewind the progress bar).
-
-Also worth noting: **VLC stays alive after a track ends**, which is exactly what
-the long-lived design needs.
-
-## Consequences for `lib/player.js`
-
-* Queue commands; resolve each on the next `"> "`; time out after 2s so a lost
-  response can never wedge the queue.
-* Poll `status` (state + volume) then `get_time` every 250 ms — VLC owns the
-  clock, so there is no drifting local counter to stack up or leak.
-* Only fire `ended` after playback has actually been observed, to ignore the
-  brief `stopped` window between `add` and the first audio.
+To reproduce any of it, run that launch line in a terminal and type the commands
+by hand — you get the same prompt-and-response session the app drives
+programmatically. Output *is* version-specific, so re-check it if VLC updates.
 
 ---
 
-## Validated in implementation (phases 1-3)
+## 1. How the protocol works
 
-Every assumption above survived contact with the running app:
+VLC prints a two-line banner and then a `"> "` prompt. From there it is a
+strict request/response loop:
 
-* **The `"> "` terminator works as a response boundary.** The command queue in
-  `lib/player.js` resolves each request on the next prompt and has not desynced
-  in testing. The 2s timeout has never needed to fire.
-* **Pause really is frozen, not slowed.** Driving the app through a pty, the
-  clock read `0:01` at pause and still `0:01` 1.2s later, then `0:03` after
-  resume. This is what confirms finding #2 end-to-end: a paused track reports
-  `playing`, so it can never be mistaken for a finished one.
-* **`clear` + `add` switches tracks cleanly** inside the one process, and `ps`
-  shows zero surviving `vlc -I rc` processes after quit.
+```
+> get_length
+10
+> get_time
+3
+> pause
+> 
+```
 
-### End-of-track path, proven in phase 4
+Three properties do all the work:
 
-Finding #3 — the empty `get_time` at end of track — is now exercised for real.
-Letting `sample-10s.mp3` run to its natural end, the app rolled into the next
-track by itself: the marker moved, total length switched `0:10` → `1:00`, and
-the clock restarted from `0:00`. So `state === 'stopped'` after playback has
-been observed is a sound `ended` trigger, and the empty `get_time` is correctly
-read as "no time available" rather than being coerced to `0`.
+* **The prompt is the ready signal.** The first `"> "` means VLC has booted and
+  is accepting commands. There is no need to guess with a startup timer.
+* **The prompt is also the response terminator.** Every command is answered by
+  zero or more `\r`-terminated lines, followed by `"> "`. Commands can therefore
+  be queued and matched to their answers exactly, one at a time.
+* **Success is often silent.** `pause`, `seek`, `stop`, `clear` and `volume N`
+  return *no* lines at all — just the next prompt. Silence means success, not a
+  lost response.
 
-Two negative cases matter just as much, and both hold:
+## 2. Command reference
 
-* **The last track does not loop.** With a folder containing only the 10s file,
-  the end of it reports `end of list` and stops — it does not restart.
-* **A deliberate `stop` never auto-advances.** Pressing `x` mid-track clears
-  the player and it stays cleared 4s later. Clearing `_sawPlayback` in `stop()`
-  is what separates "the user stopped this" from "the song ended".
+| Command | Output | Notes |
+|---|---|---|
+| `add <path>` | *(none)* | Starts playing immediately. Unquoted paths **with spaces work** — rc takes the rest of the line as the path. |
+| `get_time` | `3` | Whole seconds elapsed. Returns an **empty line** at end of track — see finding 3. |
+| `get_length` | `10` | Whole seconds, total. |
+| `is_playing` | `1` / `0` | Reports `1` while *paused* — see finding 2. |
+| `status` | `( new input: file://… )`<br>`( audio volume: 0 )`<br>`( state playing )` | State is `playing` \| `paused` \| `stopped`. One call gives both state and volume. |
+| `pause` | *(none)* | A **toggle**, not a set. |
+| `seek +3` | *(none)* | Relative seek. Verified 2s → 5s. |
+| `seek 30` | *(none)* | Absolute seek also works. |
+| `volume` | `128` | Query form. Scale is **0–256**. |
+| `volume 128` | *(none)* | Set form. |
+| `stop` / `clear` | *(none)* | Both drop `is_playing` to `0`. |
+| `quit` | `Shutting down.` | The child then exits with code 0. |
+
+---
+
+## 3. The three findings that shaped the design
+
+Each of these changed how `lib/player.js` was written, and each has since been
+confirmed by driving the finished app through a pseudo-terminal.
+
+### Finding 1 — one VLC process is enough for the entire session
+
+VLC boots happily with **no file** (`is_playing` → `0`), and `clear` + `add`
+switches tracks *inside the same process*. It also stays alive after a track
+ends rather than exiting.
+
+**Why it matters.** The player never spawns or kills a process per song. Since
+there is only ever one child, no slow `await` can finish late and leave a second,
+untracked player running in the background — the orphaned-process bug in the
+lab code becomes structurally impossible rather than merely guarded against.
+
+**Confirmed:** track switching works cleanly in the running app, and `ps` reports
+zero surviving `vlc -I rc` processes after quitting.
+
+### Finding 2 — `is_playing` returns `1` while PAUSED
+
+A paused track is still "playing" as far as `is_playing` is concerned. `status`
+tells the truth: `( state paused )`, with `get_time` frozen.
+
+**Why it matters.** This is the finding that makes auto-advance safe. Because
+pause reports as playing, a `stopped` state is an **unambiguous end-of-track
+signal** — the player can never mistake a paused song for a finished one and
+skip ahead while the user is holding it.
+
+**Confirmed:** driving the app through a pty, the clock read `0:01` at pause,
+still `0:01` more than a second later, then `0:03` after resume. Frozen, not
+merely slowed.
+
+### Finding 3 — at end of track, `get_time` returns an EMPTY line
+
+Not `0`, not the track length — nothing, alongside `is_playing` → `0`.
+
+**Why it matters.** This is a trap: `Number("")` is `0` in JavaScript, so the
+obvious parse would silently rewind the progress bar to the start at the exact
+moment a song ends. An empty response has to be read as *"no time available"*,
+which is a different thing from *zero*.
+
+**Confirmed:** letting the 10s sample run to its natural end, the app advanced to
+the next track — marker moved, length switched `0:10` → `1:00`, clock restarted
+from `0:00`. The two negative cases hold too: the **last** track reports
+`end of list` instead of looping, and a deliberate `x` (stop) does **not**
+advance, because `stop()` clears the same flag that marks "playback was seen".
+
+---
+
+## 4. How `lib/player.js` uses all this
+
+* **Commands are queued**, one in flight at a time, each resolved by the next
+  `"> "`. A 2-second timeout resolves a lost response as empty so a dropped
+  reply can never wedge the queue. (In testing it has never had to fire.)
+* **VLC owns the clock.** Every 250 ms the player asks for `status` (state and
+  volume in one call) and then `get_time`. There is no local counter to drift,
+  stack up, or leak when a track ends.
+* **`ended` fires only after playback has actually been observed**, which skips
+  the brief `stopped` window between `add` and the first audio. Deliberately
+  calling `stop()` clears that same flag, which is what distinguishes "the user
+  stopped this" from "the song finished".
+
+## 5. Limits
+
+* Measured on one VLC version on macOS. The rc interface is stable in practice,
+  but the exact strings are not a guaranteed API — treat section 2 as the thing
+  to re-verify after a VLC upgrade.
+* Times are whole seconds only, so the progress bar advances in 1-second steps.
+* A file path containing a newline would break the `add` command, since rc reads
+  the rest of the line as the path.
