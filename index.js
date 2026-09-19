@@ -16,6 +16,7 @@ const { Player } = require('./lib/player');
 
 const RENDER_INTERVAL_MS = 100;
 const DEFAULT_VOLUME_PERCENT = 60;
+const DEFAULT_VOLUME_LEVEL = Math.round((DEFAULT_VOLUME_PERCENT / 100) * 256); // VLC's 0-256 scale
 
 const USAGE = `Terminal Music Player
 
@@ -30,7 +31,8 @@ const USAGE = `Terminal Music Player
   -v, --version       show the version
 
   Keys: arrows move, enter plays, space pauses, x stops, n/b next/previous,
-        left/right seek, +/- volume, s shuffle, r end-of-track mode,
+        left/right seek, 0-9 jump to 0%-90%, +/- volume, m mute,
+        [ ] speed, a queue up next, s shuffle, r end-of-track mode,
         t sleep timer, / filter, esc clears the filter, q quits.
 `;
 
@@ -105,6 +107,11 @@ const state = {
     time: null,
     length: null,
     volume: null,
+    muted: false,
+    volumeBeforeMute: null, // restored by the next `m`
+    rate: 1,                // the speed the user chose with [ and ]
+    reportedRate: null,     // the speed VLC itself reports; shown when available
+    queue: [],              // paths queued with `a`, played before the normal order
     shuffle: false,
     repeat: 'off',    // 'off' | 'all' | 'one' | 'stop'
     query: '',
@@ -189,13 +196,15 @@ function currentOrderPosition() {
     return visibleIndex === -1 ? -1 : state.order.indexOf(visibleIndex);
 }
 
-async function playAt(visibleIndex) {
-    if (state.visible.length === 0) return;
+/** Start a song. It may not be on screen (a queued song can be filtered out),
+ *  so the cursor only follows it when it's visible. */
+async function playSong(song) {
+    const visibleIndex = state.visible.indexOf(song);
+    if (visibleIndex !== -1) state.cursor = visibleIndex;
 
-    const count = state.visible.length;
-    state.cursor = ((visibleIndex % count) + count) % count;
+    // A queue entry is used up when its song plays, however it was started.
+    state.queue = state.queue.filter((queued) => queued !== song.path);
 
-    const song = state.visible[state.cursor];
     state.currentPath = song.path;
     state.currentName = library.displayName(song);
     state.currentArtist = song.artist;
@@ -204,6 +213,26 @@ async function playAt(visibleIndex) {
     state.message = null;
 
     await player.playFile(song.path);
+}
+
+async function playAt(visibleIndex) {
+    if (state.visible.length === 0) return;
+    const count = state.visible.length;
+    await playSong(state.visible[((visibleIndex % count) + count) % count]);
+}
+
+/** Play the next queued song, if there is one. Looked up in the full list,
+ *  not `visible`, because a queued song may have been filtered out since. */
+async function playFromQueue() {
+    while (state.queue.length > 0) {
+        const song = state.songs.find((candidate) => candidate.path === state.queue[0]);
+        if (song) {
+            await playSong(song); // also removes it from the queue
+            return true;
+        }
+        state.queue.shift(); // no longer in the library: drop it
+    }
+    return false;
 }
 
 async function playOrderPosition(position) {
@@ -228,6 +257,7 @@ async function stopPlayback() {
 /** Manual next/previous: step through the play order from the PLAYING track,
  *  falling back to the cursor when nothing is loaded. Always wraps. */
 async function playRelative(delta) {
+    if (delta > 0 && await playFromQueue()) return; // `n` honours the queue; `b` doesn't
     if (state.order.length === 0) return;
 
     const position = currentOrderPosition();
@@ -241,12 +271,17 @@ async function playRelative(delta) {
     await playOrderPosition(position + delta);
 }
 
-/** End of track: 'stop' halts here, repeat-one replays it, repeat-all wraps to
- *  the start, and 'off' plays on but stops at the end of the list. */
+/** End of track: 'stop' halts here; otherwise the queue goes first; then
+ *  repeat-one replays, repeat-all wraps, and 'off' stops at the end of the list. */
 async function advanceAuto() {
-    if (state.repeat === 'stop') {
+    if (state.repeat === 'stop') { // an explicit "stop after this" beats the queue
         clearCurrent();
         state.message = 'stopped after track';
+        render();
+        return;
+    }
+
+    if (await playFromQueue()) {
         render();
         return;
     }
@@ -340,8 +375,65 @@ function cycleSleep() {
 }
 
 async function nudgeVolume(delta) {
-    const current = state.volume === null ? 154 : state.volume;
+    let current = state.volume === null ? DEFAULT_VOLUME_LEVEL : state.volume;
+    if (state.muted) { // like the Mac's own volume keys, adjusting unmutes
+        current = state.volumeBeforeMute || DEFAULT_VOLUME_LEVEL;
+        state.muted = false;
+        state.volumeBeforeMute = null;
+    }
     await player.setVolume(current + delta);
+}
+
+async function toggleMute() {
+    if (state.muted) {
+        // Restoring to 0 would be an "unmute" that stays silent.
+        const restore = state.volumeBeforeMute || DEFAULT_VOLUME_LEVEL;
+        state.muted = false;
+        state.volumeBeforeMute = null;
+        await player.setVolume(restore);
+        state.message = 'unmuted';
+    } else {
+        state.volumeBeforeMute = state.volume;
+        state.muted = true;
+        await player.setVolume(0);
+        state.message = 'muted';
+    }
+}
+
+/** 0-9 jump to 0%-90% of the playing track. */
+async function jumpToPercent(digit) {
+    if (!state.currentPath || !state.length) return;
+    await player.seekTo((state.length * digit) / 10);
+}
+
+const RATES = [0.5, 0.75, 1, 1.25, 1.5, 2];
+
+/** `[` slower, `]` faster, stopping at either end rather than wrapping. */
+async function stepRate(direction) {
+    const index = RATES.indexOf(state.rate);
+    const next = RATES[Math.min(RATES.length - 1, Math.max(0, (index === -1 ? 2 : index) + direction))];
+    if (next === state.rate) {
+        state.message = `speed ${state.rate}× is the ${direction > 0 ? 'fastest' : 'slowest'}`;
+        return;
+    }
+    state.rate = next;
+    await player.setRate(next);
+    state.message = `speed ${next}×`;
+}
+
+/** `a` toggles the highlighted song in the up-next queue. */
+function toggleQueue() {
+    const song = state.visible[state.cursor];
+    if (!song) return;
+
+    const at = state.queue.indexOf(song.path);
+    if (at === -1) {
+        state.queue.push(song.path);
+        state.message = `queued #${state.queue.length}: ${library.displayName(song)}`;
+    } else {
+        state.queue.splice(at, 1);
+        state.message = `unqueued: ${library.displayName(song)}`;
+    }
 }
 
 // --- input ----------------------------------------------------------------
@@ -405,6 +497,11 @@ async function handleKey(key) {
             if (key.ch === 's') { toggleShuffle(); break; }
             if (key.ch === 'r') { cycleRepeat(); break; }
             if (key.ch === 't') { cycleSleep(); break; }
+            if (key.ch === 'm') { await toggleMute(); break; }
+            if (key.ch === 'a') { toggleQueue(); break; }
+            if (key.ch === '[') { await stepRate(-1); break; }
+            if (key.ch === ']') { await stepRate(1); break; }
+            if (key.ch >= '0' && key.ch <= '9') { await jumpToPercent(Number(key.ch)); break; }
             if (key.ch === '+' || key.ch === '=') { await nudgeVolume(VOLUME_STEP); break; }
             if (key.ch === '-' || key.ch === '_') { await nudgeVolume(-VOLUME_STEP); break; }
             if (key.ch === '/') { state.filterMode = true; state.message = null; break; }
@@ -439,6 +536,7 @@ async function main() {
         state.time = snapshot.time;
         if (snapshot.length !== null) state.length = snapshot.length;
         state.volume = snapshot.volume;
+        state.reportedRate = snapshot.reportedRate;
     });
 
     player.on('ended', () => {

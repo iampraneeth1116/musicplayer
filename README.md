@@ -3,8 +3,8 @@
 A terminal music player written in plain Node.js — no npm dependencies. It
 browses a folder of audio files and plays them through VLC, with a live
 in-place TUI: cursor navigation, song titles and artists read from each file's
-tags, play/pause/stop, a sleep timer, and a progress bar driven by VLC's own
-clock.
+tags, an up-next queue, speed control, a sleep timer, and a progress bar driven
+by VLC's own clock.
 
 ```
  ♪  Terminal Music Player                                         sleep 29:45
@@ -54,7 +54,11 @@ a stack trace.
 | `x` | stop |
 | `n` `b` | next / previous (steps from the playing track, not the cursor) |
 | `←` `→` | seek 5 seconds back / forward |
+| `0`–`9` | jump to 0%, 10% … 90% of the song |
 | `+` `-` | volume up / down (10% steps) |
+| `m` | mute / unmute |
+| `[` `]` | slower / faster: 0.5× to 2× |
+| `a` | add the highlighted song to the up-next queue (again to remove) |
 | `s` | shuffle on / off |
 | `r` | end-of-track mode: off → all → one → stop |
 | `t` | sleep timer: off → 15 → 30 → 45 → 60 min |
@@ -76,7 +80,7 @@ most-used first, and always keeps `q quit`. The full list is in `--help`.
 | `index.js` | app state, key bindings, startup and the single shutdown path |
 | `lib/library.js` | **file handling** — scans the folder once, filters to audio, probes durations |
 | `lib/tags.js` | **file handling** — reads title/artist/album from ID3 tags in each file |
-| `lib/player.js` | **process management** — the VLC child and its `rc` command protocol |
+| `lib/player.js` | **process management** — the VLC child, its `rc` command protocol, and a read-only web channel for playback speed |
 | `lib/ui.js` | **rendering** — one full-frame ANSI write per tick |
 | `lib/keys.js` | **input** — raw stdin bytes into named key events |
 | `lib/format.js` | small helpers (`m:ss`, truncate, pad) |
@@ -125,7 +129,8 @@ Hardening covers an empty folder, a folder that does not exist, VLC missing from
 100 columns including a live resize.
 
 Added after phase 6: the `stop` end-of-track mode, `Esc` to clear a filter,
-song titles from ID3 tags, and the sleep timer. The tag reader was checked
+song titles from ID3 tags, the sleep timer, the up-next queue, playback speed,
+mute, and jumping by percent. The tag reader was checked
 against VLC's own reading of real files, then against 25 hand-built tags covering
 every text encoding, the v2.2 and v1 formats, unsynchronisation and corrupt
 data.
@@ -146,6 +151,10 @@ mode:
 
 `stop` is for listening to one song and letting it end — playback halts when the
 track finishes instead of rolling on.
+
+**Queued songs come first.** Anything added with `a` plays before the normal
+order, whatever the shuffle and repeat modes — except `stop`, which still stops
+and keeps the queue for later. See *Up-next queue* below.
 
 Shuffle reorders that sequence without touching the list on screen, so what you
 see stays sorted by title while playback jumps around.
@@ -180,6 +189,52 @@ Column alignment assumes one terminal column per character, which holds for
 Latin script. Titles in scripts with combining marks (Tamil, Devanagari) or
 double-width characters (Chinese, Japanese) display correctly but may sit a
 little out of line.
+
+## Up-next queue
+
+`a` adds the highlighted song to the queue without interrupting what's playing.
+Queued songs show their position beside them in the list (`1`, `2` …) and the
+header shows `queue 2`. Press `a` on a queued song to take it back out.
+
+```
+now:    23 Theme
+next:   Raga of Revenge          ← queued 1st
+then:   Deewana Kar Raha Hai     ← queued 2nd
+after:  normal order resumes
+```
+
+* When a song ends, or when you press `n`, the next queued song plays.
+* `b` ignores the queue and goes back through the normal order.
+* A queue entry is used up when its song plays, however it was started — so
+  pressing `⏎` on a queued song plays it now and removes it from the queue.
+* A queued song still plays even if a filter is hiding it.
+
+## Speed, mute and jumping
+
+`[` and `]` step the speed through 0.5×, 0.75×, 1×, 1.25×, 1.5× and 2×, and it
+stays set when the track changes. The header shows the speed **VLC reports**
+whenever it isn't 1×.
+
+VLC's usual control channel can't report its speed — the query crashes inside
+VLC's own script (see `docs/rc-notes.md`). So the player also switches on VLC's
+built-in web interface and reads the speed from there, about once a second.
+That interface:
+
+* listens on your own Mac only (`127.0.0.1`), on a free port picked at startup;
+* refuses any request without a password, which is random and new every session;
+* exists only while the player is running.
+
+One thing to know: VLC accepts that password only as a command-line argument,
+so while the player runs, another account on the same Mac could see it with
+`ps` and control the player. On a personal laptop that doesn't matter. If the
+web interface can't start, the header shows the speed the player last set, and
+everything else works as normal.
+
+`m` mutes and unmutes, restoring the exact volume you had. Pressing `+` or `-`
+while muted unmutes too, the way the Mac's own volume keys do.
+
+`0`–`9` jump to that tenth of the song: `5` is halfway, `0` is the start.
+While typing in the filter box, digits go into the search instead.
 
 ## Sleep timer
 

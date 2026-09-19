@@ -61,6 +61,8 @@ Three properties do all the work:
 | `pause` | *(none)* | A **toggle**, not a set. |
 | `seek +3` | *(none)* | Relative seek. Verified 2s → 5s. |
 | `seek 30` | *(none)* | Absolute seek also works. |
+| `rate 1.5` | *(none)* | Sets playback speed. Verified by the clock: `get_time` advanced 1.49 s per real second at `1.5` and 0.50 at `0.5`. **Survives** `clear` + `add`. |
+| `rate` | `Error in 'rate' … common.lua:52: bad argument #1 to 'match'` | **The query form is broken** in 3.0.23 — it errors inside VLC's own Lua script, so the speed can't be read over rc. See section 5. |
 | `volume` | `128` | Query form. Scale is **0–256**. |
 | `volume 128` | *(none)* | Set form. |
 | `stop` / `clear` | *(none)* | Both drop `is_playing` to `0`. |
@@ -131,11 +133,46 @@ advance, because `stop()` clears the same flag that marks "playback was seen".
   calling `stop()` clears that same flag, which is what distinguishes "the user
   stopped this" from "the song finished".
 
-## 5. Limits
+## 5. Reading the speed through the web interface
+
+Launching with `--extraintf http` runs VLC's web interface alongside rc. Its
+`/requests/status.json` reports the playback rate correctly, even though the rc
+query for the same value errors:
+
+| Set over rc | `status.json` reports `rate` |
+|---|---|
+| `rate 1` | `1` |
+| `rate 1.5` | `1.5015015602112` — VLC stores speed as a ratio, so it is rounded to 2 places |
+| `rate 0.5` | `0.5` |
+| `rate 2`, then `clear` + `add` | `2` — survives the track change |
+
+The flags the player adds:
+
+    --extraintf http --http-host 127.0.0.1 --http-port <free port> --http-password <random>
+
+Measured, not assumed:
+
+* Listens on `127.0.0.1` **only** — checked with `lsof`.
+* A missing or wrong password gets `401`.
+* The password is 32 random hex characters, new every session, and gone from the
+  process list once the player quits.
+* It **is** visible in `ps` while the player runs, because VLC only accepts it as
+  a command-line argument.
+* If the chosen port is already taken, VLC still starts and rc works normally;
+  only the web interface is missing, and the reported speed stays unknown.
+
+The player reads it about once a second, and straight after `[` or `]`. The rc
+channel is unaffected: playback clocks measured 1.49 s per second at 1.5× with
+the web interface running.
+
+## 6. Limits
 
 * Measured on one VLC version on macOS. The rc interface is stable in practice,
   but the exact strings are not a guaranteed API — treat section 2 as the thing
   to re-verify after a VLC upgrade.
 * Times are whole seconds only, so the progress bar advances in 1-second steps.
+* Playback speed can't be read over rc (the `rate` query errors), so it comes
+  from the web interface instead (section 5). If that can't start, the player
+  shows the speed it last set.
 * A file path containing a newline would break the `add` command, since rc reads
   the rest of the line as the path.
