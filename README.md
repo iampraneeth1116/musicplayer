@@ -1,10 +1,7 @@
 # Terminal Music Player
 
-A terminal music player written in plain Node.js — no npm dependencies. It
-browses a folder of audio files and plays them through VLC, with a live
-in-place TUI: cursor navigation, song titles and artists read from each file's
-tags, an up-next queue, speed control, a sleep timer, and a progress bar driven
-by VLC's own clock.
+A music player that runs inside your terminal. It's built with plain Node.js,
+so there's nothing to install from npm, and it plays your songs through VLC.
 
 ```
  ♪  Terminal Music Player                                         sleep 29:45
@@ -21,226 +18,188 @@ by VLC's own clock.
  ↑↓ move · ⏎ play · space pause · x stop · n/b skip · / find · q quit
 ```
 
-## Requirements
+## What you need
 
-* **Node.js** (no packages to install)
-* **VLC** — `brew install vlc`. The player talks to it over its `rc` interface.
-* **macOS** for song durations, which come from the built-in `afinfo`.
-  Without it the list simply shows `--:--`; everything else still works.
+- **Node.js**
+- **VLC**: install it with `brew install vlc`
+- **A Mac**, for showing song lengths. On other systems everything works, but
+  lengths show as `--:--`.
 
-## Running
+## Start it
+
+Put your songs in the `songs` folder, then run:
 
 ```bash
-node index.js                    # plays from ./songs
-node index.js /path/to/music     # any other folder
-node index.js --volume 0         # start muted (0-100, default 60)
-node index.js --vlc /path/to/vlc # a VLC that isn't on your PATH
-node index.js --sleep 30         # stop playback after 30 minutes
-node index.js --help             # full usage
+node index.js
 ```
 
-It needs a real terminal — piping stdin exits with a message rather than
-crashing in raw mode. Unknown options, a bad `--volume`, or a folder that does
-not exist all fail with a specific message and a non-zero exit code, rather than
-a stack trace.
+You can add options:
+
+| Command | What it does |
+|---|---|
+| `node index.js ~/Music` | play songs from a different folder |
+| `node index.js --volume 30` | start at 30% volume (normally 60%) |
+| `node index.js --sleep 30` | stop playing after 30 minutes |
+| `node index.js --vlc /path/to/vlc` | use VLC from an unusual location |
+| `node index.js --help` | show every option and key |
+
+If something is wrong, such as a folder that doesn't exist or VLC not being
+installed, the player tells you in one clear line instead of crashing.
 
 ## Keys
 
-| Key | Action |
+**Playing**
+
+| Key | Does |
 |---|---|
-| `↑` `↓` | move the cursor (wraps around) |
-| `⏎` | play the highlighted song |
+| `⏎` Enter | play the highlighted song |
 | `space` | pause / resume |
 | `x` | stop |
-| `n` `b` | next / previous (steps from the playing track, not the cursor) |
-| `←` `→` | seek 5 seconds back / forward |
-| `0`–`9` | jump to 0%, 10% … 90% of the song |
-| `+` `-` | volume up / down (10% steps) |
+| `n` / `b` | next / previous song |
+
+**Moving around**
+
+| Key | Does |
+|---|---|
+| `↑` `↓` | move up and down the list |
+| `←` `→` | go back / forward 5 seconds |
+| `0` – `9` | jump through the song: `5` is halfway, `0` is the start |
+
+**Sound**
+
+| Key | Does |
+|---|---|
+| `+` `-` | volume up / down |
 | `m` | mute / unmute |
-| `[` `]` | slower / faster: 0.5× to 2× |
-| `a` | add the highlighted song to the up-next queue (again to remove) |
+| `[` `]` | slower / faster, from 0.5× to 2× |
+
+**Modes**
+
+| Key | Does |
+|---|---|
 | `s` | shuffle on / off |
-| `r` | end-of-track mode: off → all → one → stop |
-| `t` | sleep timer: off → 15 → 30 → 45 → 60 min |
-| `/` | filter by title, artist, album or filename |
-| `Esc` | clear the filter |
+| `r` | choose what happens when a song ends (see below) |
+| `a` | add the highlighted song to the up-next queue |
+| `t` | sleep timer: 15, 30, 45 or 60 minutes |
+
+**Searching and quitting**
+
+| Key | Does |
+|---|---|
+| `/` | search by song name, artist or album |
+| `Esc` | clear the search |
 | `q` or `Ctrl-C` | quit |
 
-While filtering, typing edits the query: `⏎` keeps the filter and returns to
-normal keys, `Esc` clears it, backspace deletes. `Ctrl-C` always quits, even
-mid-filter. Outside the filter box, `Esc` clears an active filter.
+While you're typing a search, every key types into the search box, including
+`q`. Press `Enter` to keep the results, or `Esc` to clear them.
 
-The help line at the bottom fits as many of these as the terminal is wide,
-most-used first, and always keeps `q quit`. The full list is in `--help`.
+The bottom line of the screen shows as many of these keys as fit. `--help`
+lists them all.
 
-## How it fits together
+## Features
 
-| File | Responsibility |
+### When a song ends: `r`
+
+Press `r` to step through four modes. Unless it's *off*, the current mode shows
+in the top-right corner.
+
+| Mode | When a song finishes |
 |---|---|
-| `index.js` | app state, key bindings, startup and the single shutdown path |
-| `lib/library.js` | **file handling** — scans the folder once, filters to audio, probes durations |
-| `lib/tags.js` | **file handling** — reads title/artist/album from ID3 tags in each file |
-| `lib/player.js` | **process management** — the VLC child, its `rc` command protocol, and a read-only web channel for playback speed |
-| `lib/ui.js` | **rendering** — one full-frame ANSI write per tick |
-| `lib/keys.js` | **input** — raw stdin bytes into named key events |
-| `lib/format.js` | small helpers (`m:ss`, truncate, pad) |
+| off | play the next song, and stop after the last one |
+| repeat all | play the next song, and go back to the first after the last one |
+| repeat one | play the same song again |
+| stop after track | stop |
 
-### Four decisions worth knowing
+`x` is different: it stops straight away, while *stop after track* lets the
+song finish first.
 
-**One long-lived VLC process.** VLC starts once and tracks are switched with
-`clear` + `add`, instead of spawning and killing a player per song. There is
-never more than one child, so no async race can strand an orphan playing in the
-background.
+### Shuffle: `s`
 
-**VLC owns the clock.** Elapsed time comes from polling `get_time`, not from a
-local `setInterval` counter. Nothing drifts, nothing double-counts, and there is
-no timer to leak when a track ends.
+Songs play in a random order, but the list on screen stays in order, so you
+can still find any song easily.
 
-**One writer to the screen.** Only `ui.render()` touches stdout, from a single
-100 ms frame loop. No stray `console.log` can corrupt the display.
+### Up-next queue: `a`
 
-**One way out.** `q`, `Ctrl-C`, a signal, or an uncaught exception all funnel
-through the same `shutdown()`, which quits VLC, restores cooked mode, unhides
-the cursor and leaves the alternate screen buffer. Quitting never leaves music
-playing behind it.
-
-## Status
-
-Built in phases, each with a checkpoint that had to actually run.
-
-| Phase | Scope | State |
-|---|---|---|
-| 0 | VLC `rc` protocol spike → `docs/rc-notes.md` | ✅ done |
-| 1 | library scan + static render | ✅ done |
-| 2 | key decoding + navigation + clean exit | ✅ done |
-| 3 | play / pause / stop / next / prev | ✅ done |
-| 4 | auto-advance at end of track | ✅ done |
-| 5 | shuffle, repeat, seek, volume, filter | ✅ done |
-| 6 | hardening, `--help`, design notes | ✅ done |
-
-Every checkpoint was verified by driving the app through a real
-pseudo-terminal rather than by reading the code. Among other things: pause
-freezes the clock and resume continues it, a finished track advances to the next
-by itself, repeat-all wraps from last to first, seeking clamps at zero, and `ps`
-reports **no** VLC processes left alive after quitting.
-
-Hardening covers an empty folder, a folder that does not exist, VLC missing from
-`PATH`, every key pressed with nothing playing, and terminal widths from 28 to
-100 columns including a live resize.
-
-Added after phase 6: the `stop` end-of-track mode, `Esc` to clear a filter,
-song titles from ID3 tags, the sleep timer, the up-next queue, playback speed,
-mute, and jumping by percent. The tag reader was checked
-against VLC's own reading of real files, then against 25 hand-built tags covering
-every text encoding, the v2.2 and v1 formats, unsynchronisation and corrupt
-data.
-
-`docs/rc-notes.md` documents VLC's `rc` protocol as measured.
-
-## Playback order
-
-When a track finishes the next one starts by itself, following the current
-mode:
-
-| Mode | At the end of a track | At the end of the list |
-|---|---|---|
-| `off` | plays the next song | stops, shows `end of list` |
-| `all` | plays the next song | wraps back to the first |
-| `one` | replays the same song | — |
-| `stop` | stops there | — |
-
-`stop` is for listening to one song and letting it end — playback halts when the
-track finishes instead of rolling on.
-
-**Queued songs come first.** Anything added with `a` plays before the normal
-order, whatever the shuffle and repeat modes — except `stop`, which still stops
-and keeps the queue for later. See *Up-next queue* below.
-
-Shuffle reorders that sequence without touching the list on screen, so what you
-see stays sorted by title while playback jumps around.
-
-Stopping with `x` is treated as deliberate and never advances — worth noting,
-because a stopped player and a finished track look identical to VLC. The
-difference is tracked explicitly.
-
-`n` / `b` step relative to the **playing** track, so browsing with the arrow
-keys while music plays doesn't change what "next" means. The playing track is
-identified by its file path rather than its position, because filtering and
-shuffling both move positions around underneath it. If the playing song is
-filtered out of view, `n` starts again from the cursor.
-
-## Song titles
-
-Titles, artists and albums come from each file's **ID3 tags**, read directly by
-`lib/tags.js` — no child process, and no need to load every song through VLC.
-It understands ID3v2.2, v2.3 and v2.4 at the start of a file, and falls back to
-the older ID3v1 block at the end. Large frames such as embedded album art are
-skipped rather than read.
-
-* The list is **sorted by title**, and gains an artist column when any song has
-  an artist.
-* A file without tags shows its filename, minus the extension.
-* `/` searches titles, artists and albums as well as filenames — type an
-  artist's name to find their songs.
-* Tags are shown exactly as written in the file. If a download site appended
-  its name to the title, fix the file's tags rather than the player.
-
-Column alignment assumes one terminal column per character, which holds for
-Latin script. Titles in scripts with combining marks (Tamil, Devanagari) or
-double-width characters (Chinese, Japanese) display correctly but may sit a
-little out of line.
-
-## Up-next queue
-
-`a` adds the highlighted song to the queue without interrupting what's playing.
-Queued songs show their position beside them in the list (`1`, `2` …) and the
-header shows `queue 2`. Press `a` on a queued song to take it back out.
+Highlight a song and press `a` to play it next, without stopping the current
+song. Queued songs show a number (`1`, `2` …) in the list.
 
 ```
 now:    23 Theme
-next:   Raga of Revenge          ← queued 1st
-then:   Deewana Kar Raha Hai     ← queued 2nd
-after:  normal order resumes
+next:   Raga of Revenge          ← you pressed a on this first
+then:   Deewana Kar Raha Hai     ← then on this
+after:  the normal order carries on
 ```
 
-* When a song ends, or when you press `n`, the next queued song plays.
-* `b` ignores the queue and goes back through the normal order.
-* A queue entry is used up when its song plays, however it was started — so
-  pressing `⏎` on a queued song plays it now and removes it from the queue.
-* A queued song still plays even if a filter is hiding it.
+Press `a` again on a queued song to remove it. `n` plays the next queued song;
+`b` ignores the queue.
 
-## Speed, mute and jumping
+### Song names and artists
 
-`[` and `]` step the speed through 0.5×, 0.75×, 1×, 1.25×, 1.5× and 2×, and it
-stays set when the track changes. The header shows the speed **VLC reports**
-whenever it isn't 1×.
+The player reads each song's real title and artist from inside the music file.
+A file without that information is shown by its filename. Searching with `/`
+also finds artists, so typing `anirudh` finds all of his songs.
 
-VLC's usual control channel can't report its speed — the query crashes inside
-VLC's own script (see `docs/rc-notes.md`). So the player also switches on VLC's
-built-in web interface and reads the speed from there, about once a second.
-That interface:
+### Sleep timer: `t`
 
-* listens on your own Mac only (`127.0.0.1`), on a free port picked at startup;
-* refuses any request without a password, which is random and new every session;
-* exists only while the player is running.
+Each press of `t` sets the timer to the next step: 15 → 30 → 45 → 60 minutes →
+off. A countdown shows in the top-right corner. When it reaches zero the music
+stops, even if *repeat all* is on.
 
-One thing to know: VLC accepts that password only as a command-line argument,
-so while the player runs, another account on the same Mac could see it with
-`ps` and control the player. On a personal laptop that doesn't matter. If the
-web interface can't start, the header shows the speed the player last set, and
-everything else works as normal.
+### Speed, mute and jumping
 
-`m` mutes and unmutes, restoring the exact volume you had. Pressing `+` or `-`
-while muted unmutes too, the way the Mac's own volume keys do.
+- `[` `]` change the speed. It stays the same when the song changes.
+- `m` mutes, and pressing it again brings back the exact volume you had.
+- The number keys jump to part of a song, which is handy for skipping a long
+  intro.
 
-`0`–`9` jump to that tenth of the song: `5` is halfway, `0` is the start.
-While typing in the filter box, digits go into the search instead.
+## How it works
 
-## Sleep timer
+The player starts **one copy of VLC** in the background and sends it short text
+commands like `pause` or `seek +5`, the same ones you could type to VLC by hand.
+Four times a second it asks VLC where the song is, which is what moves the
+progress bar.
 
-`t` arms a timer — 15, 30, 45 or 60 minutes — and each press moves to the next
-and restarts the countdown; after 60 it switches off. The header shows the time
-remaining, e.g. `sleep 29:41`. `--sleep <minutes>` sets any duration at launch.
+The project shows three main ideas:
 
-When it fires, playback **stops** just as `x` would, so it can't be undone by
-auto-advance — not even with `repeat all` on.
+| Idea | Where |
+|---|---|
+| **Command-line app**: reading single key presses and drawing the screen | `lib/keys.js`, `lib/ui.js`, `index.js` |
+| **File handling**: finding the songs and reading titles from inside the files | `lib/library.js`, `lib/tags.js` |
+| **Process management**: starting VLC, talking to it, and closing it properly | `lib/player.js` |
+
+A few choices that keep it reliable:
+
+- **Only one VLC ever runs.** Changing songs reuses it, so a song can never keep
+  playing in the background after you've moved on.
+- **The time comes from VLC**, not from a counter in the app, so the progress
+  bar is always right, even after pausing or jumping.
+- **Quitting cleans up.** Whether you press `q` or `Ctrl-C`, or the player hits
+  an error, it stops VLC and puts your terminal back to normal.
+
+## How it was built
+
+It was built in stages, and each stage was tested by actually running it in a
+terminal before moving on.
+
+| Stage | What was added |
+|---|---|
+| 0 | tested how VLC's command interface behaves |
+| 1 | reading the songs folder and drawing the screen |
+| 2 | keyboard controls and quitting cleanly |
+| 3 | play, pause, stop, next and previous |
+| 4 | moving to the next song automatically |
+| 5 | shuffle, repeat, seeking, volume and search |
+| 6 | error handling and command-line options |
+| later | song titles, stop-after-track, queue, speed, mute, jumping and the sleep timer |
+
+## Good to know
+
+- **Speed display.** VLC's normal command interface can't report its speed, so
+  the player reads it from VLC's small built-in web page instead. That page only
+  works on your own computer and needs a password that changes every time. While
+  the player is running, other people logged into the same Mac could see that
+  password, so it's best used on your own laptop.
+- **Titles are shown exactly as stored in the file.** If a download site added
+  its name to a title, fix it in the file's details rather than in the player.
+- **Non-Latin titles** (for example Tamil, Hindi or Chinese) display correctly
+  but may sit slightly out of line in the list.

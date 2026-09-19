@@ -127,8 +127,22 @@ let sleepTimer = null;
 let uiActive = false;
 let shuttingDown = false;
 
+// Status messages ("shuffle on", "sleep timer: 15 min") replace the key hints
+// on the bottom line. They're temporary: after a few seconds the hints return.
+const MESSAGE_MS = 3000;
+let shownMessage = null;
+let messageShownAt = 0;
+
 function render() {
-    if (uiActive) ui.render({ ...state, songs: state.visible });
+    if (!uiActive) return;
+    if (state.message !== shownMessage) {
+        shownMessage = state.message;
+        messageShownAt = Date.now();
+    } else if (state.message && Date.now() - messageShownAt > MESSAGE_MS) {
+        state.message = null;
+        shownMessage = null;
+    }
+    ui.render({ ...state, songs: state.visible });
 }
 
 // --- lifecycle ------------------------------------------------------------
