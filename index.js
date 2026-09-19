@@ -25,17 +25,24 @@ const USAGE = `Terminal Music Player
 
   --volume <0-100>    starting volume (default: ${DEFAULT_VOLUME_PERCENT})
   --vlc <binary>      VLC executable to use (default: vlc)
+  --sleep <minutes>   stop playback after this many minutes
   -h, --help          show this help
   -v, --version       show the version
 
   Keys: arrows move, enter plays, space pauses, x stops, n/b next/previous,
-        left/right seek, +/- volume, s shuffle, r repeat, / filter, q quits.
+        left/right seek, +/- volume, s shuffle, r end-of-track mode,
+        t sleep timer, / filter, esc clears the filter, q quits.
 `;
 
 /** Explicit parser: every argument is classified, and anything unrecognised is
  *  reported instead of being silently ignored. */
 function parseArgs(argv) {
-    const options = { dir: null, volume: DEFAULT_VOLUME_PERCENT, vlc: 'vlc', help: false, version: false };
+    const options = { dir: null, volume: DEFAULT_VOLUME_PERCENT, vlc: 'vlc', sleep: null, help: false, version: false };
+    const setOption = (name, value) => {
+        if (name === 'volume') options.volume = Number(value);
+        else if (name === 'sleep') options.sleep = Number(value);
+        else options.vlc = value;
+    };
 
     for (let i = 0; i < argv.length; i++) {
         const arg = argv[i];
@@ -43,18 +50,16 @@ function parseArgs(argv) {
         if (arg === '-h' || arg === '--help') { options.help = true; continue; }
         if (arg === '-v' || arg === '--version') { options.version = true; continue; }
 
-        if (arg === '--volume' || arg === '--vlc') {
+        if (arg === '--volume' || arg === '--vlc' || arg === '--sleep') {
             const value = argv[++i];
             if (value === undefined) throw new Error(`${arg} needs a value`);
-            if (arg === '--volume') options.volume = Number(value);
-            else options.vlc = value;
+            setOption(arg.slice(2), value);
             continue;
         }
 
-        const inlineMatch = arg.match(/^--(volume|vlc)=(.*)$/);
+        const inlineMatch = arg.match(/^--(volume|vlc|sleep)=(.*)$/);
         if (inlineMatch) {
-            if (inlineMatch[1] === 'volume') options.volume = Number(inlineMatch[2]);
-            else options.vlc = inlineMatch[2];
+            setOption(inlineMatch[1], inlineMatch[2]);
             continue;
         }
 
@@ -66,6 +71,10 @@ function parseArgs(argv) {
 
     if (!Number.isFinite(options.volume) || options.volume < 0 || options.volume > 100) {
         throw new Error('--volume must be a number between 0 and 100');
+    }
+    if (options.sleep !== null
+        && (!Number.isFinite(options.sleep) || options.sleep <= 0 || options.sleep > 24 * 60)) {
+        throw new Error('--sleep must be a number of minutes, above 0 and at most 1440');
     }
 
     return options;
@@ -91,6 +100,7 @@ const state = {
     cursor: 0,        // where the user is browsing, indexes `visible`
     currentPath: null,   // the PLAYING track, identified by path (see below)
     currentName: null,
+    currentArtist: null,
     playerState: 'stopped',
     time: null,
     length: null,
@@ -99,11 +109,14 @@ const state = {
     repeat: 'off',    // 'off' | 'all' | 'one' | 'stop'
     query: '',
     filterMode: false,
+    sleepAt: null,       // epoch ms when the sleep timer will stop playback
+    sleepMinutes: null,  // the preset currently armed, so `t` can step to the next
     message: null,
 };
 
 let player = null;
 let renderTimer = null;
+let sleepTimer = null;
 let uiActive = false;
 let shuttingDown = false;
 
@@ -120,6 +133,7 @@ async function shutdown(code = 0, err = null) {
     shuttingDown = true;
 
     if (renderTimer) clearInterval(renderTimer);
+    if (sleepTimer) clearTimeout(sleepTimer);
 
     try {
         if (process.stdin.isTTY) process.stdin.setRawMode(false);
@@ -145,9 +159,11 @@ async function shutdown(code = 0, err = null) {
  *  walk through it — identity normally, shuffled when shuffle is on. */
 function applyFilter() {
     const query = state.query.trim().toLowerCase();
-    state.visible = query
-        ? state.songs.filter((song) => song.name.toLowerCase().includes(query))
-        : state.songs.slice();
+    // Match the filename AND the tags, so typing an artist finds their songs.
+    const matches = (song) => [song.name, song.title, song.artist, song.album]
+        .some((field) => field && field.toLowerCase().includes(query));
+
+    state.visible = query ? state.songs.filter(matches) : state.songs.slice();
 
     rebuildOrder();
     state.cursor = Math.max(0, Math.min(state.cursor, state.visible.length - 1));
@@ -181,7 +197,8 @@ async function playAt(visibleIndex) {
 
     const song = state.visible[state.cursor];
     state.currentPath = song.path;
-    state.currentName = song.name;
+    state.currentName = library.displayName(song);
+    state.currentArtist = song.artist;
     state.time = 0;
     state.length = song.duration;
     state.message = null;
@@ -198,6 +215,7 @@ async function playOrderPosition(position) {
 function clearCurrent() {
     state.currentPath = null;
     state.currentName = null;
+    state.currentArtist = null;
     state.time = null;
     state.length = null;
 }
@@ -280,6 +298,47 @@ function cycleRepeat() {
     state.message = REPEAT_LABELS[state.repeat];
 }
 
+const SLEEP_PRESETS = [15, 30, 45, 60];
+
+/** Arm the sleep timer for `minutes`, or disarm it with null. One setTimeout,
+ *  replaced on every change, so there is never more than one pending. */
+function setSleep(minutes) {
+    if (sleepTimer) clearTimeout(sleepTimer);
+    sleepTimer = null;
+    state.sleepAt = null;
+    state.sleepMinutes = null;
+    if (!minutes) return;
+
+    const delay = minutes * 60 * 1000;
+    state.sleepMinutes = minutes;
+    state.sleepAt = Date.now() + delay;
+    sleepTimer = setTimeout(() => {
+        sleepFired().catch((err) => { state.message = `sleep timer failed: ${err.message}`; });
+    }, delay);
+}
+
+/** Stop exactly as `x` does, so auto-advance can't start the next song. */
+async function sleepFired() {
+    sleepTimer = null;
+    state.sleepAt = null;
+    state.sleepMinutes = null;
+    if (state.currentPath) {
+        await stopPlayback();
+        state.message = 'sleep timer: playback stopped';
+    } else {
+        state.message = 'sleep timer ended';
+    }
+    render();
+}
+
+/** off -> 15 -> 30 -> 45 -> 60 -> off. Each press restarts the countdown. */
+function cycleSleep() {
+    const index = SLEEP_PRESETS.indexOf(state.sleepMinutes);
+    const next = index === -1 ? SLEEP_PRESETS[0] : SLEEP_PRESETS[index + 1] || null;
+    setSleep(next);
+    state.message = next ? `sleep timer: ${next} min` : 'sleep timer off';
+}
+
 async function nudgeVolume(delta) {
     const current = state.volume === null ? 154 : state.volume;
     await player.setVolume(current + delta);
@@ -345,6 +404,7 @@ async function handleKey(key) {
             if (key.ch === 'x') { await stopPlayback(); break; }
             if (key.ch === 's') { toggleShuffle(); break; }
             if (key.ch === 'r') { cycleRepeat(); break; }
+            if (key.ch === 't') { cycleSleep(); break; }
             if (key.ch === '+' || key.ch === '=') { await nudgeVolume(VOLUME_STEP); break; }
             if (key.ch === '-' || key.ch === '_') { await nudgeVolume(-VOLUME_STEP); break; }
             if (key.ch === '/') { state.filterMode = true; state.message = null; break; }
@@ -364,12 +424,15 @@ async function main() {
     }
 
     state.songs = library.load(songsDir);
+    await library.loadTags(state.songs);
+    library.sortForDisplay(state.songs);
     applyFilter(); // seeds `visible` and `order` from the full list
 
     player = new Player({ bin: options.vlc });
     await player.start();
 
     await player.setVolume((options.volume / 100) * 256);
+    if (options.sleep) setSleep(options.sleep);
 
     player.on('tick', (snapshot) => {
         state.playerState = snapshot.state;

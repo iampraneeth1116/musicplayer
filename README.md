@@ -2,20 +2,23 @@
 
 A terminal music player written in plain Node.js — no npm dependencies. It
 browses a folder of audio files and plays them through VLC, with a live
-in-place TUI: cursor navigation, play/pause/stop, and a progress bar driven by
-VLC's own clock.
+in-place TUI: cursor navigation, song titles and artists read from each file's
+tags, play/pause/stop, a sleep timer, and a progress bar driven by VLC's own
+clock.
 
 ```
- ♪  Terminal Music Player
-──────────────────────────────────────────────────────────────────────────
-    sample-10s.mp3                                                   0:10
- ▶  sample-speech-1m.mp3                                             1:00
-    sample-speech-2m.mp3                                             1:00
-──────────────────────────────────────────────────────────────────────────
- ▶   sample-speech-1m.mp3
- ███░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0:03 / 1:00  vol 60%
-──────────────────────────────────────────────────────────────────────────
- ↑↓ move · ⏎ play · space pause · x stop · n/b next/prev · q quit
+ ♪  Terminal Music Player                                         sleep 29:45
+──────────────────────────────────────────────────────────────────────────────
+    23 Theme                                 Anirudh Ravichander, Hect…  0:48
+    Deewana Kar Raha Hai                     Rashid Khan, Javed Ali      6:25
+    Dhurandhar Song Baloch - Sagar Kadam X…                              3:51
+ ▶  Make Way For The King                    Dhp, Sai Abhyankkar         1:55
+    Raga of Revenge - MassTamilan            Anirudh Ravichander - Mas…  2:11
+──────────────────────────────────────────────────────────────────────────────
+ ▶   Make Way For The King — Dhp, Sai Abhyankkar
+ █████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0:11 / 1:55  vol 60%
+──────────────────────────────────────────────────────────────────────────────
+ ↑↓ move · ⏎ play · space pause · x stop · n/b skip · / find · q quit
 ```
 
 ## Requirements
@@ -32,6 +35,7 @@ node index.js                    # plays from ./songs
 node index.js /path/to/music     # any other folder
 node index.js --volume 0         # start muted (0-100, default 60)
 node index.js --vlc /path/to/vlc # a VLC that isn't on your PATH
+node index.js --sleep 30         # stop playback after 30 minutes
 node index.js --help             # full usage
 ```
 
@@ -53,7 +57,8 @@ a stack trace.
 | `+` `-` | volume up / down (10% steps) |
 | `s` | shuffle on / off |
 | `r` | end-of-track mode: off → all → one → stop |
-| `/` | filter the list by name |
+| `t` | sleep timer: off → 15 → 30 → 45 → 60 min |
+| `/` | filter by title, artist, album or filename |
 | `Esc` | clear the filter |
 | `q` or `Ctrl-C` | quit |
 
@@ -61,12 +66,16 @@ While filtering, typing edits the query: `⏎` keeps the filter and returns to
 normal keys, `Esc` clears it, backspace deletes. `Ctrl-C` always quits, even
 mid-filter. Outside the filter box, `Esc` clears an active filter.
 
+The help line at the bottom fits as many of these as the terminal is wide,
+most-used first, and always keeps `q quit`. The full list is in `--help`.
+
 ## How it fits together
 
 | File | Responsibility |
 |---|---|
 | `index.js` | app state, key bindings, startup and the single shutdown path |
 | `lib/library.js` | **file handling** — scans the folder once, filters to audio, probes durations |
+| `lib/tags.js` | **file handling** — reads title/artist/album from ID3 tags in each file |
 | `lib/player.js` | **process management** — the VLC child and its `rc` command protocol |
 | `lib/ui.js` | **rendering** — one full-frame ANSI write per tick |
 | `lib/keys.js` | **input** — raw stdin bytes into named key events |
@@ -115,6 +124,12 @@ Hardening covers an empty folder, a folder that does not exist, VLC missing from
 `PATH`, every key pressed with nothing playing, and terminal widths from 28 to
 100 columns including a live resize.
 
+Added after phase 6: the `stop` end-of-track mode, `Esc` to clear a filter,
+song titles from ID3 tags, and the sleep timer. The tag reader was checked
+against VLC's own reading of real files, then against 25 hand-built tags covering
+every text encoding, the v2.2 and v1 formats, unsynchronisation and corrupt
+data.
+
 `docs/rc-notes.md` documents VLC's `rc` protocol as measured.
 
 ## Playback order
@@ -133,7 +148,7 @@ mode:
 track finishes instead of rolling on.
 
 Shuffle reorders that sequence without touching the list on screen, so what you
-see stays alphabetical while playback jumps around.
+see stays sorted by title while playback jumps around.
 
 Stopping with `x` is treated as deliberate and never advances — worth noting,
 because a stopped player and a finished track look identical to VLC. The
@@ -145,7 +160,32 @@ identified by its file path rather than its position, because filtering and
 shuffling both move positions around underneath it. If the playing song is
 filtered out of view, `n` starts again from the cursor.
 
-## Notes
+## Song titles
 
-`songs/sample-speech-2m.mp3` is byte-identical to the `1m` file (same md5), so
-both correctly show `1:00`. The filename is wrong, not the duration probe.
+Titles, artists and albums come from each file's **ID3 tags**, read directly by
+`lib/tags.js` — no child process, and no need to load every song through VLC.
+It understands ID3v2.2, v2.3 and v2.4 at the start of a file, and falls back to
+the older ID3v1 block at the end. Large frames such as embedded album art are
+skipped rather than read.
+
+* The list is **sorted by title**, and gains an artist column when any song has
+  an artist.
+* A file without tags shows its filename, minus the extension.
+* `/` searches titles, artists and albums as well as filenames — type an
+  artist's name to find their songs.
+* Tags are shown exactly as written in the file. If a download site appended
+  its name to the title, fix the file's tags rather than the player.
+
+Column alignment assumes one terminal column per character, which holds for
+Latin script. Titles in scripts with combining marks (Tamil, Devanagari) or
+double-width characters (Chinese, Japanese) display correctly but may sit a
+little out of line.
+
+## Sleep timer
+
+`t` arms a timer — 15, 30, 45 or 60 minutes — and each press moves to the next
+and restarts the countdown; after 60 it switches off. The header shows the time
+remaining, e.g. `sleep 29:41`. `--sleep <minutes>` sets any duration at launch.
+
+When it fires, playback **stops** just as `x` would, so it can't be undone by
+auto-advance — not even with `repeat all` on.
